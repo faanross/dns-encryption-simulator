@@ -93,6 +93,11 @@ type AgentConfig struct {
 	// DoHServerURL is the full URL to the DoH endpoint
 	// Example: "https://timeserversync.test:8443/dns-query"
 	DoHServerURL string
+
+	// ========== DoT CONFIGURATION ==========
+	// DoTServerAddr is the address of the DoT server (IP:port)
+	// Example: "127.0.0.1:8853"
+	DoTServerAddr string
 }
 
 // ServerConfig holds all configuration for the DNS server
@@ -209,6 +214,7 @@ func DefaultAgentConfig() *AgentConfig {
 		TLSServerName:      "timeserversync.com",
 		InsecureSkipVerify: false, // Require valid certs
 		DoHServerURL:       "https://127.0.0.1:8443/dns-query",
+		DoTServerAddr:      "127.0.0.1:8853",
 	}
 }
 

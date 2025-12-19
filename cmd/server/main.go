@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -18,15 +19,23 @@ func main() {
 	// =============================================================================
 
 	cfg := &config.ServerConfig{
-		Domain:         "timeserversync.test", // LOCAL: Use .test for testing
-		ResponseIP:     "127.0.0.1",           // LOCAL: Respond with localhost
-		TTL:            60,                    // 60 second TTL
-		EnablePlainDNS: true,                  // Enable plain DNS
-		EnableDoH:      false,                 // Not yet implemented
-		EnableDoT:      false,                 // Not yet implemented
-		EnableDoQ:      false,                 // Not yet implemented
-		LogQueries:     true,                  // Log all queries
-		Verbose:        true,                  // Detailed logging
+		Domain:     "timeserversync.test",
+		ResponseIP: "127.0.0.1",
+		TTL:        60,
+
+		// Enable protocols
+		EnablePlainDNS: true,  // Plain DNS on port 15353
+		EnableDoH:      true,  // DoH on port 8443
+		EnableDoT:      true,  // Not yet implemented
+		EnableDoQ:      false, // Not yet implemented
+
+		// TLS Configuration (for DoH, DoT, DoQ)
+		TLSCertFile: "./certs/server.crt",
+		TLSKeyFile:  "./certs/server.key",
+
+		// Logging
+		LogQueries: true,
+		Verbose:    true,
 	}
 
 	// =============================================================================
@@ -38,15 +47,6 @@ func main() {
 	fmt.Println("╚════════════════════════════════════════════════╝")
 	fmt.Println()
 
-	// Validate configuration
-	// Note: We skip TLS validation since we're only doing plain DNS for now
-	if cfg.Domain == "" {
-		log.Fatal("❌ Domain cannot be empty")
-	}
-	if cfg.ResponseIP == "" {
-		log.Fatal("❌ Response IP cannot be empty")
-	}
-
 	// Display configuration
 	fmt.Println("Configuration:")
 	fmt.Println("─────────────────────────────────────────────────")
@@ -54,17 +54,23 @@ func main() {
 	fmt.Printf("  Response IP: %s\n", cfg.ResponseIP)
 	fmt.Printf("  TTL:         %d seconds\n", cfg.TTL)
 	fmt.Println("\nEnabled Protocols:")
-	fmt.Printf("  Plain DNS:   %v\n", cfg.EnablePlainDNS)
-	fmt.Printf("  DoH:         %v (not implemented)\n", cfg.EnableDoH)
-	fmt.Printf("  DoT:         %v (not implemented)\n", cfg.EnableDoT)
-	fmt.Printf("  DoQ:         %v (not implemented)\n", cfg.EnableDoQ)
+	fmt.Printf("  Plain DNS:   %v (port 15353)\n", cfg.EnablePlainDNS)
+	fmt.Printf("  DoH:         %v (port 8443)\n", cfg.EnableDoH)
+	fmt.Printf("  DoT:         %v (port 8853)\n", cfg.EnableDoT)
+	fmt.Printf("  DoQ:         %v\n", cfg.EnableDoQ)
+
+	if cfg.EnableDoH || cfg.EnableDoT || cfg.EnableDoQ {
+		fmt.Println("\nTLS Configuration:")
+		fmt.Printf("  Certificate: %s\n", cfg.TLSCertFile)
+		fmt.Printf("  Private Key: %s\n", cfg.TLSKeyFile)
+	}
 	fmt.Println()
 
 	// =============================================================================
-	// CREATE SERVER
+	// CREATE SERVERS
 	// =============================================================================
 
-	// Create the DNS handler
+	// Create the DNS handler (shared by all protocols)
 	handler, err := dns.NewServer(
 		cfg.Domain,
 		cfg.ResponseIP,
@@ -76,19 +82,57 @@ func main() {
 		log.Fatalf("❌ Failed to create DNS handler: %v", err)
 	}
 
-	// Create plain DNS server on port 5353
-	// (Port 53 requires root/admin privileges)
-	plainServer := dns.NewPlainDNSServer(handler, "127.0.0.1:15353")
+	// Track running servers
+	var wg sync.WaitGroup
+	errChan := make(chan error, 2)
+
+	// Start Plain DNS server
+	if cfg.EnablePlainDNS {
+		plainServer := dns.NewPlainDNSServer(handler, "127.0.0.1:15353")
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := plainServer.Start(); err != nil {
+				errChan <- fmt.Errorf("Plain DNS server error: %w", err)
+			}
+		}()
+	}
+
+	// Start DoH server
+	if cfg.EnableDoH {
+		dohServer := dns.NewDoHServer(handler, "127.0.0.1:8443", cfg.TLSCertFile, cfg.TLSKeyFile)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := dohServer.Start(); err != nil {
+				errChan <- fmt.Errorf("DoH server error: %w", err)
+			}
+		}()
+	}
+
+	// Start DoT server
+	if cfg.EnableDoT {
+		dotServer := dns.NewDoTServer(handler, "127.0.0.1:8853", cfg.TLSCertFile, cfg.TLSKeyFile)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := dotServer.Start(); err != nil {
+				errChan <- fmt.Errorf("DoT server error: %w", err)
+			}
+		}()
+	}
+
+	// Give servers a moment to start
+	time.Sleep(500 * time.Millisecond)
 
 	// =============================================================================
 	// SET UP SIGNAL HANDLING
 	// =============================================================================
 
-	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	// Start statistics printer goroutine
+	// Statistics printer
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -106,11 +150,17 @@ func main() {
 		}
 	}()
 
-	// Handle shutdown signal
-	go func() {
-		sig := <-sigChan
+	fmt.Println("✓ All servers ready\n")
+
+	// =============================================================================
+	// WAIT FOR SHUTDOWN
+	// =============================================================================
+
+	// Wait for signal or error
+	select {
+	case sig := <-sigChan:
 		fmt.Printf("\n\n⚠️  Received signal: %v\n", sig)
-		fmt.Println("Shutting down server...")
+		fmt.Println("Shutting down servers...")
 
 		// Print final statistics
 		queryCount, uptime := handler.GetStats()
@@ -122,22 +172,9 @@ func main() {
 			fmt.Printf("  Average QPS:   %.2f\n", qps)
 		}
 
-		// Stop the server
-		if err := plainServer.Stop(); err != nil {
-			log.Printf("Error stopping server: %v", err)
-		}
+		fmt.Println("\n✓ Shutdown complete")
 
-		os.Exit(0)
-	}()
-
-	// =============================================================================
-	// START SERVER
-	// =============================================================================
-
-	fmt.Println("✓ Server ready\n")
-
-	// Start the server (blocks until stopped)
-	if err := plainServer.Start(); err != nil {
+	case err := <-errChan:
 		log.Fatalf("❌ Server error: %v", err)
 	}
 }
