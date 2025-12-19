@@ -8,6 +8,7 @@
 # Ignore certificate and key files
 *.key
 *.crt
+*.conf
 
 # Test binary, built with `go test -c`
 *.test
