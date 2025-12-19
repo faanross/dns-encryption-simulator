@@ -88,6 +88,11 @@ type AgentConfig struct {
 	// InsecureSkipVerify allows self-signed certificates (for testing)
 	// WARNING: Set to false in production
 	InsecureSkipVerify bool
+
+	// ========== DoH CONFIGURATION ==========
+	// DoHServerURL is the full URL to the DoH endpoint
+	// Example: "https://timeserversync.test:8443/dns-query"
+	DoHServerURL string
 }
 
 // ServerConfig holds all configuration for the DNS server
@@ -203,6 +208,7 @@ func DefaultAgentConfig() *AgentConfig {
 		SubdomainMaxLength: 60, // Close to 63 char limit
 		TLSServerName:      "timeserversync.com",
 		InsecureSkipVerify: false, // Require valid certs
+		DoHServerURL:       "https://127.0.0.1:8443/dns-query",
 	}
 }
 
